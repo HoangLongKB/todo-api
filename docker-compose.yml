@@ -1,0 +1,32 @@
+# Hạ tầng local: Postgres 17 và Redis 7. Chỉ dùng cho máy dev, mật khẩu giả.
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: todo-postgres
+    environment:
+      POSTGRES_USER: todo_user        # user đăng nhập Postgres
+      POSTGRES_PASSWORD: todo_pass_local  # mật khẩu giả, chỉ dùng local
+      POSTGRES_DB: todo_db            # tên database (bên trong có bảng "todo")
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U todo_user -d todo_db']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: todo-redis
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

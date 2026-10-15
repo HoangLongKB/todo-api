@@ -10,6 +10,8 @@ export const envSchema = z.object({
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
     .default('info'),
+  DATABASE_URL: z.url().startsWith('postgres'),
+  DB_MAX_CONNECTIONS: z.coerce.number().int().positive().default(10),
 });
 
 export type Env = z.infer<typeof envSchema>;
