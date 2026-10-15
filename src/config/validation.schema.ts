@@ -12,6 +12,8 @@ export const envSchema = z.object({
     .default('info'),
   DATABASE_URL: z.url().startsWith('postgres'),
   DB_MAX_CONNECTIONS: z.coerce.number().int().positive().default(10),
+  // Không bắt buộc: thiếu thì app chạy không cache (fail-open)
+  REDIS_URL: z.url().startsWith('redis').optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
