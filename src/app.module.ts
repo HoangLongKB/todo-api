@@ -4,7 +4,10 @@ import { ConfigModule } from '@nestjs/config';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 import { validateEnv } from './config/validation.schema';
+import { CacheModule } from './cache/cache.module';
 import { DatabaseModule } from './database/database.module';
+import { JobsModule } from './jobs/jobs.module';
+import { TodosModule } from './todos/todos.module';
 import { HealthModule } from './health/health.module';
 
 @Module({
@@ -25,7 +28,10 @@ import { HealthModule } from './health/health.module';
     // Giới hạn 100 request / 60 giây mỗi IP, chống spam.
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
     DatabaseModule,
+    CacheModule,
     HealthModule,
+    TodosModule,
+    JobsModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
