@@ -18,3 +18,4 @@ export class HealthController {
     return { status: 'ok', version: APP_VERSION };
   }
 }
+console.log(   "ci red test"   )
