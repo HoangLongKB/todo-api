@@ -12,6 +12,14 @@ import { TransformInterceptor } from './common/interceptors/transform.intercepto
 export function configureApp(app: INestApplication): void {
   app.useLogger(app.get(Logger));
   app.setGlobalPrefix(API_PREFIX);
+  // CORS: trình duyệt chỉ cho web ở origin khác gọi API nếu API nói "tôi cho phép origin đó".
+  // Danh sách lấy từ env, local mặc định là web dev ở cổng 3000.
+  app.enableCors({
+    origin: (process.env.CORS_ORIGINS ?? 'http://localhost:3000')
+      .split(',')
+      .map((o) => o.trim()),
+    credentials: false,
+  });
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true, // bỏ field không khai trong DTO

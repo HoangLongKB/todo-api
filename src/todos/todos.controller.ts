@@ -11,7 +11,7 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
-import { ApiHeader, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { CurrentUid } from '../common/decorators/current-uid.decorator';
 import { CreateTodoDto } from './dto/create-todo.dto';
 import { ListTodosQuery } from './dto/list-todos.query';
@@ -20,11 +20,7 @@ import { PagedTodos, TodosService } from './todos.service';
 import { Todo } from './todo.entity';
 
 @ApiTags('todos')
-@ApiHeader({
-  name: 'x-owner-uid',
-  required: false,
-  description: 'Tạm thời, thay bằng Firebase token ở giai đoạn 5',
-})
+@ApiBearerAuth()
 @Controller('todos')
 export class TodosController {
   constructor(private readonly todos: TodosService) {}
