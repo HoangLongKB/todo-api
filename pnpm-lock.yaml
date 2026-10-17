@@ -42,7 +42,7 @@ importers:
         specifier: ^18.0.8
         version: 18.0.8
       firebase-admin:
-        specifier: '13'
+        specifier: ^13.10.0
         version: 13.10.0
       ioredis:
         specifier: ^5.11.1
