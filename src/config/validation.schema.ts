@@ -14,6 +14,11 @@ export const envSchema = z.object({
   DB_MAX_CONNECTIONS: z.coerce.number().int().positive().default(10),
   // Không bắt buộc: thiếu thì app chạy không cache (fail-open)
   REDIS_URL: z.url().startsWith('redis').optional(),
+  FIREBASE_PROJECT_ID: z.string().min(1),
+  // Chuỗi bí mật cho máy gọi máy (GAS, Scheduler). Tối thiểu 16 ký tự.
+  WEBHOOK_SECRET: z.string().min(16),
+  // Origin web được gọi API, cách nhau bằng dấu phẩy
+  CORS_ORIGINS: z.string().default('http://localhost:3000'),
 });
 
 export type Env = z.infer<typeof envSchema>;
