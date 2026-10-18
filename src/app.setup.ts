@@ -35,6 +35,11 @@ export function configureApp(app: INestApplication): void {
     .setDescription('API todo mô phỏng backend công ty. Dữ liệu giả.')
     .setVersion(APP_VERSION)
     .addBearerAuth()
+    // Ô nhập x-webhook-secret trên Swagger để thử route webhook/jobs bằng tay
+    .addApiKey(
+      { type: 'apiKey', name: 'x-webhook-secret', in: 'header' },
+      'webhook',
+    )
     .build();
   SwaggerModule.setup(DOCS_PATH, app, SwaggerModule.createDocument(app, doc));
 }
