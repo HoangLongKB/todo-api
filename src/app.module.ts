@@ -21,6 +21,16 @@ import { GasModule } from './gas/gas.module';
     LoggerModule.forRoot({
       pinoHttp: {
         level: process.env.LOG_LEVEL ?? 'info',
+        // Che header nhạy cảm trước khi ghi log. Không che thì ID token / webhook secret
+        // nằm nguyên trong Cloud Logging, ai đọc được log là dùng được token (còn hạn 1 giờ).
+        redact: {
+          paths: [
+            'req.headers.authorization',
+            'req.headers["x-webhook-secret"]',
+            'req.headers.cookie',
+          ],
+          censor: '[che]',
+        },
         transport:
           process.env.NODE_ENV === 'development'
             ? { target: 'pino-pretty', options: { singleLine: true } }
