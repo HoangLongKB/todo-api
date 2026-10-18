@@ -56,6 +56,8 @@ services:
       REDIS_URL: redis://redis:6379
       FIREBASE_PROJECT_ID: todo-lab-hoanglong
       WEBHOOK_SECRET: local-webhook-secret-doi-sau
+      GAS_WEBAPP_URL: ${GAS_WEBAPP_URL:-}
+      GAS_WEBAPP_SECRET: ${GAS_WEBAPP_SECRET:-}
       CORS_ORIGINS: http://localhost:3000
       # firebase-admin trong container không có gcloud: mượn ADC của máy qua volume bên dưới
       GOOGLE_APPLICATION_CREDENTIALS: /gcloud/adc.json

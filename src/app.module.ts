@@ -10,6 +10,8 @@ import { DatabaseModule } from './database/database.module';
 import { JobsModule } from './jobs/jobs.module';
 import { TodosModule } from './todos/todos.module';
 import { HealthModule } from './health/health.module';
+import { WebhookModule } from './webhook/webhook.module';
+import { GasModule } from './gas/gas.module';
 
 @Module({
   imports: [
@@ -34,6 +36,8 @@ import { HealthModule } from './health/health.module';
     HealthModule,
     TodosModule,
     JobsModule,
+    WebhookModule,
+    GasModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

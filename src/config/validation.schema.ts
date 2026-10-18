@@ -19,7 +19,18 @@ export const envSchema = z.object({
   WEBHOOK_SECRET: z.string().min(16),
   // Origin web được gọi API, cách nhau bằng dấu phẩy
   CORS_ORIGINS: z.string().default('http://localhost:3000'),
+  // Chiều API -> GAS: URL web app Apps Script và secret riêng (không dùng chung WEBHOOK_SECRET).
+  // Không bắt buộc: thiếu thì route export trả 503 "chưa cấu hình". Chuỗi rỗng coi như thiếu.
+  GAS_WEBAPP_URL: z.preprocess(emptyToUndefined, z.url().optional()),
+  GAS_WEBAPP_SECRET: z.preprocess(
+    emptyToUndefined,
+    z.string().min(16).optional(),
+  ),
 });
+
+function emptyToUndefined(v: unknown): unknown {
+  return typeof v === 'string' && v.trim() === '' ? undefined : v;
+}
 
 export type Env = z.infer<typeof envSchema>;
 

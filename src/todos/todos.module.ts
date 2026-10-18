@@ -8,5 +8,6 @@ import { TodosService } from './todos.service';
   imports: [TypeOrmModule.forFeature([Todo])], // cấp Repository<Todo> cho module này
   controllers: [TodosController],
   providers: [TodosService],
+  exports: [TodosService], // WebhookModule dùng list + importMany
 })
 export class TodosModule {}
