@@ -1,5 +1,7 @@
 # CD cho môi trường DEV. Chạy khi có push (merge PR) vào develop.
-# Mô phỏng release-develop.yml của công ty. Pha A: DATABASE_URL lấy từ GitHub Secret, truyền thẳng vào Cloud Run.
+# Mô phỏng release-develop.yml của công ty. Pha A: DATABASE_URL và WEBHOOK_SECRET lấy từ GitHub Secret, truyền thẳng vào Cloud Run.
+# Env của dev khai báo ĐỦ BỘ ở bước deploy (--set-env-vars), không kế thừa từ revision trước.
+# Dấu ngăn giữa các biến là | (cú pháp ^|^) vì giá trị có dấu phẩy/@.
 name: release-develop
 
 on:
@@ -153,7 +155,7 @@ jobs:
             --image "${IMAGE}@${{ needs.build.outputs.digest }}" \
             --service-account "$RUNTIME_SA" \
             --add-cloudsql-instances "$SQL_CONN" \
-            --update-env-vars "^@^DATABASE_URL=${{ secrets.DATABASE_URL_DEV }}?host=/cloudsql/${SQL_CONN}" \
+            --set-env-vars "^|^NODE_ENV=production|LOG_LEVEL=info|FIREBASE_PROJECT_ID=${GCP_PROJECT_ID}|DB_MAX_CONNECTIONS=5|CORS_ORIGINS=https://todo-web-dev-${{ vars.GCP_PROJECT_NUMBER }}.${REGION}.run.app|DATABASE_URL=${{ secrets.DATABASE_URL_DEV }}?host=/cloudsql/${SQL_CONN}|WEBHOOK_SECRET=${{ secrets.WEBHOOK_SECRET_DEV }}" \
             --allow-unauthenticated \
             --max-instances 2 \
             --timeout 300 \
