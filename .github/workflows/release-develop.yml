@@ -81,13 +81,13 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Quét Trivy (CRITICAL có bản vá thì chặn)
-        uses: aquasecurity/trivy-action@v0.33.1
-        with:
-          image-ref: ${{ env.IMAGE }}:scan
-          format: table
-          severity: CRITICAL
-          ignore-unfixed: true
-          exit-code: '1'
+        # Tự tải binary thay vì dùng trivy-action: script cài của action hay fail vì rate limit API GitHub.
+        env:
+          TRIVY_VERSION: 0.76.0
+        run: |
+          curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" | tar -xz trivy
+          ./trivy --version
+          ./trivy image --scanners vuln --severity CRITICAL --ignore-unfixed --exit-code 1 --format table "${IMAGE}:scan"
       - id: push
         name: Push (dùng lại cache, gần như tức thì)
         uses: docker/build-push-action@v6
