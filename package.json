@@ -30,7 +30,7 @@
     "migration:run": "pnpm typeorm migration:run",
     "migration:revert": "pnpm typeorm migration:revert",
     "migration:show": "pnpm typeorm migration:show",
-    "migration:create": "sh -c 'pnpm typeorm migration:create src/database/migrations/\"$0\"'"
+    "migration:create": "sh -c 'typeorm-ts-node-commonjs migration:create src/database/migrations/\"$0\"'"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
