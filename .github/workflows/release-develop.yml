@@ -1,5 +1,6 @@
 # CD cho môi trường DEV. Chạy khi có push (merge PR) vào develop.
-# Mô phỏng release-develop.yml của công ty. Pha A: DATABASE_URL và WEBHOOK_SECRET lấy từ GitHub Secret, truyền thẳng vào Cloud Run.
+# Mô phỏng release-develop.yml của công ty. Pha B: secret nằm trong Secret Manager; Cloud Run gắn bằng --set-secrets,
+# job migrate đọc bằng gcloud secrets versions access. Workflow và GitHub không giữ giá trị nào.
 # Env của dev khai báo ĐỦ BỘ ở bước deploy (--set-env-vars), không kế thừa từ revision trước.
 # Dấu ngăn giữa các biến là | (cú pháp ^|^) vì giá trị có dấu phẩy/@.
 name: release-develop
@@ -122,19 +123,24 @@ jobs:
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
           service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
-      - name: Tải và chạy Cloud SQL Auth Proxy
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Chạy Cloud SQL Auth Proxy dạng Unix socket (cùng đường dẫn /cloudsql/... như trên Cloud Run)
         run: |
           curl -fsSL -o cloud-sql-proxy https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.26.2/cloud-sql-proxy.linux.amd64
           chmod +x cloud-sql-proxy
-          ./cloud-sql-proxy --address 127.0.0.1 --port 5432 "$SQL_CONN" > proxy.log 2>&1 &
+          sudo mkdir -p /cloudsql && sudo chown "$USER" /cloudsql
+          ./cloud-sql-proxy --unix-socket /cloudsql "$SQL_CONN" > proxy.log 2>&1 &
           for i in $(seq 1 20); do
-            (echo > /dev/tcp/127.0.0.1/5432) 2>/dev/null && { echo "proxy sẵn sàng sau ${i}s"; exit 0; }
+            [ -S "/cloudsql/$SQL_CONN/.s.PGSQL.5432" ] && { echo "proxy sẵn sàng sau ${i}s"; exit 0; }
             sleep 1
           done
           echo "proxy không lên"; cat proxy.log; exit 1
+      - name: Lấy DATABASE_URL từ Secret Manager (Pha B, không còn GitHub Secret)
+        run: |
+          URL="$(gcloud secrets versions access latest --secret=todo-database-url-dev --project "$GCP_PROJECT_ID")"
+          echo "::add-mask::$URL"
+          echo "DATABASE_URL=$URL" >> "$GITHUB_ENV"
       - name: Chạy migration
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL_DEV }} # Pha A: giá trị thật nằm trong GitHub Secret
         run: pnpm migration:run
 
   # 4. Deploy candidate (0% traffic) -> health check 3 lần -> chuyển traffic. Fail trước khi chuyển thì bản cũ vẫn phục vụ.
@@ -155,7 +161,8 @@ jobs:
             --image "${IMAGE}@${{ needs.build.outputs.digest }}" \
             --service-account "$RUNTIME_SA" \
             --add-cloudsql-instances "$SQL_CONN" \
-            --set-env-vars "^|^NODE_ENV=production|LOG_LEVEL=info|FIREBASE_PROJECT_ID=${GCP_PROJECT_ID}|DB_MAX_CONNECTIONS=5|CORS_ORIGINS=https://todo-web-dev-${{ vars.GCP_PROJECT_NUMBER }}.${REGION}.run.app|DATABASE_URL=${{ secrets.DATABASE_URL_DEV }}?host=/cloudsql/${SQL_CONN}|WEBHOOK_SECRET=${{ secrets.WEBHOOK_SECRET_DEV }}" \
+            --set-env-vars "^|^NODE_ENV=production|LOG_LEVEL=info|FIREBASE_PROJECT_ID=${GCP_PROJECT_ID}|DB_MAX_CONNECTIONS=5|CORS_ORIGINS=https://todo-web-dev-${{ vars.GCP_PROJECT_NUMBER }}.${REGION}.run.app" \
+            --set-secrets "DATABASE_URL=todo-database-url-dev:latest,WEBHOOK_SECRET=todo-webhook-secret-dev:latest" \
             --allow-unauthenticated \
             --max-instances 2 \
             --timeout 300 \
