@@ -1,0 +1,67 @@
+# Rollback DEV bằng tay nhưng qua pipeline: người on-call có NÚT, không cần quyền gcloud.
+# Chỉ đổi bảng traffic của service, không build, không deploy, không đụng DB.
+name: rollback-develop
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: 'Tên revision muốn trỏ 100% traffic (để trống = revision ngay trước bản đang chạy)'
+        required: false
+        default: ''
+      reason:
+        description: 'Lý do rollback (ghi vào log run để tra sau)'
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  REGION: asia-southeast1
+  SERVICE: todo-api-dev
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Xác định revision đích
+        id: target
+        run: |
+          echo "Lý do: ${{ inputs.reason }}"
+          CURRENT=$(gcloud run services describe "$SERVICE" --region "$REGION" --format='value(status.traffic[0].revisionName)')
+          echo "Đang phục vụ: $CURRENT"
+          if [ -n "${{ inputs.revision }}" ]; then
+            TARGET="${{ inputs.revision }}"
+          else
+            # Danh sách revision Ready, mới nhất trước; lấy cái đứng ngay sau bản đang chạy
+            TARGET=$(gcloud run revisions list --service "$SERVICE" --region "$REGION" \
+              --filter="status.conditions.type=Ready AND status.conditions.status=True" \
+              --sort-by='~metadata.creationTimestamp' --format='value(name)' \
+              | grep -A1 -x "$CURRENT" | tail -n1)
+          fi
+          if [ -z "$TARGET" ] || [ "$TARGET" = "$CURRENT" ]; then
+            echo "Không tìm được revision trước để rollback"; exit 1
+          fi
+          echo "Rollback về: $TARGET"
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+      - name: Kiểm tra revision đích còn khỏe (gọi qua URL tag tạm)
+        run: |
+          gcloud run services update-traffic "$SERVICE" --region "$REGION" --update-tags "rollback=${{ steps.target.outputs.target }}"
+          URL="https://rollback---${SERVICE}-${{ vars.GCP_PROJECT_NUMBER }}.${REGION}.run.app/api/v1/health"
+          for i in 1 2 3; do
+            curl -fsS --max-time 10 "$URL" && { echo; exit 0; }
+            echo "lần $i chưa ok"; sleep 10
+          done
+          echo "Revision đích không trả lời health, dừng"; exit 1
+      - name: Chuyển 100% traffic
+        run: |
+          gcloud run services update-traffic "$SERVICE" --region "$REGION" --to-revisions "${{ steps.target.outputs.target }}=100"
+          gcloud run services update-traffic "$SERVICE" --region "$REGION" --remove-tags rollback
+          gcloud run services describe "$SERVICE" --region "$REGION" --format='yaml(status.traffic)'

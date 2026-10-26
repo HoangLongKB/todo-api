@@ -1,0 +1,197 @@
+# CD cho môi trường DEV. Chạy khi có push (merge PR) vào develop.
+# Mô phỏng release-develop.yml của công ty. Pha B: secret nằm trong Secret Manager; Cloud Run gắn bằng --set-secrets,
+# job migrate đọc bằng gcloud secrets versions access. Workflow và GitHub không giữ giá trị nào.
+# Env của dev khai báo ĐỦ BỘ ở bước deploy (--set-env-vars), không kế thừa từ revision trước.
+# Dấu ngăn giữa các biến là | (cú pháp ^|^) vì giá trị có dấu phẩy/@.
+name: release-develop
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+# Hai lần merge sát nhau thì chạy lần lượt, KHÔNG hủy run đang deploy dở (khác CI).
+concurrency:
+  group: release-develop
+  cancel-in-progress: false
+
+permissions:
+  contents: write # semantic-release tạo tag + GitHub Release
+  id-token: write # xin OIDC token để đổi lấy token GCP (WIF)
+
+env:
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  REGION: asia-southeast1
+  SERVICE: todo-api-dev
+  RUNTIME_SA: todo-api-sa@${{ vars.GCP_PROJECT_ID }}.iam.gserviceaccount.com
+  SQL_CONN: ${{ vars.GCP_PROJECT_ID }}:asia-southeast1:todo-sql
+  IMAGE: asia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/todo/todo-api
+
+jobs:
+  # 1. Tính version từ commit message (feat -> minor, fix -> patch), tạo tag dev-vX.Y.Z + Release.
+  version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.semrel.outputs.new_release_version }}
+      released: ${{ steps.semrel.outputs.new_release_published }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # cần toàn bộ lịch sử để tìm tag release trước
+      - id: semrel
+        uses: cycjimmy/semantic-release-action@v8.1.3
+        with:
+          semantic_version: 24
+          extra_plugins: |
+            @semantic-release/commit-analyzer@13
+            @semantic-release/release-notes-generator@14
+            @semantic-release/github@11
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 2. Build image amd64, quét lỗ hổng, rồi mới push. Tag theo commit, theo nội dung (tree), và dev-latest.
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: version
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+      tree: ${{ steps.meta.outputs.tree }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        name: Tính tag
+        run: |
+          echo "sha=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tree=$(git rev-parse --short=12 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: gcloud auth configure-docker asia-southeast1-docker.pkg.dev --quiet
+      - uses: docker/setup-buildx-action@v3
+      - name: Build (chưa push) để quét
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: production
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.IMAGE }}:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Quét Trivy (CRITICAL có bản vá thì chặn)
+        # Tự tải binary thay vì dùng trivy-action: script cài của action hay fail vì rate limit API GitHub.
+        env:
+          TRIVY_VERSION: 0.76.0
+        run: |
+          curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" | tar -xz trivy
+          ./trivy --version
+          ./trivy image --scanners vuln --severity CRITICAL --ignore-unfixed --exit-code 1 --format table "${IMAGE}:scan"
+      - id: push
+        name: Push (dùng lại cache, gần như tức thì)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: production
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:sha-${{ steps.meta.outputs.sha }}
+            ${{ env.IMAGE }}:tree-${{ steps.meta.outputs.tree }}
+            ${{ env.IMAGE }}:dev-latest
+            ${{ needs.version.outputs.released == 'true' && format('{0}:dev-v{1}', env.IMAGE, needs.version.outputs.version) || '' }}
+          cache-from: type=gha
+
+  # 3. Migration chạy TỪ RUNNER, nối Cloud SQL qua Auth Proxy. Fail ở đây thì DB chưa đổi gì, app cũ vẫn chạy.
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Chạy Cloud SQL Auth Proxy dạng Unix socket (cùng đường dẫn /cloudsql/... như trên Cloud Run)
+        run: |
+          curl -fsSL -o cloud-sql-proxy https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.26.2/cloud-sql-proxy.linux.amd64
+          chmod +x cloud-sql-proxy
+          sudo mkdir -p /cloudsql && sudo chown "$USER" /cloudsql
+          ./cloud-sql-proxy --unix-socket /cloudsql "$SQL_CONN" > proxy.log 2>&1 &
+          for i in $(seq 1 20); do
+            [ -S "/cloudsql/$SQL_CONN/.s.PGSQL.5432" ] && { echo "proxy sẵn sàng sau ${i}s"; exit 0; }
+            sleep 1
+          done
+          echo "proxy không lên"; cat proxy.log; exit 1
+      - name: Lấy DATABASE_URL từ Secret Manager (Pha B, không còn GitHub Secret)
+        run: |
+          URL="$(gcloud secrets versions access latest --secret=todo-database-url-dev --project "$GCP_PROJECT_ID")"
+          echo "::add-mask::$URL"
+          echo "DATABASE_URL=$URL" >> "$GITHUB_ENV"
+      - name: Chạy migration
+        run: pnpm migration:run
+
+  # 4. Deploy candidate (0% traffic) -> health check 3 lần -> chuyển traffic. Fail trước khi chuyển thì bản cũ vẫn phục vụ.
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [build, migrate]
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Deploy candidate (không traffic)
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --region "$REGION" \
+            --image "${IMAGE}@${{ needs.build.outputs.digest }}" \
+            --service-account "$RUNTIME_SA" \
+            --add-cloudsql-instances "$SQL_CONN" \
+            --set-env-vars "^|^NODE_ENV=production|LOG_LEVEL=info|FIREBASE_PROJECT_ID=${GCP_PROJECT_ID}|DB_MAX_CONNECTIONS=5|CORS_ORIGINS=https://todo-web-dev-${{ vars.GCP_PROJECT_NUMBER }}.${REGION}.run.app" \
+            --set-secrets "DATABASE_URL=todo-database-url-dev:latest,WEBHOOK_SECRET=todo-webhook-secret-dev:latest" \
+            --allow-unauthenticated \
+            --max-instances 2 \
+            --timeout 300 \
+            --no-traffic --tag candidate
+      - name: Health check candidate (3 lần, cách 20s)
+        run: |
+          URL="https://candidate---${SERVICE}-${{ vars.GCP_PROJECT_NUMBER }}.${REGION}.run.app/api/v1/health"
+          echo "Gọi $URL"
+          for i in 1 2 3; do
+            if curl -fsS --max-time 10 "$URL"; then echo; echo "OK lần $i"; exit 0; fi
+            echo "Lần $i chưa ok, đợi 20s"; sleep 20
+          done
+          echo "Candidate không khỏe sau 3 lần, KHÔNG chuyển traffic"; exit 1
+      - name: Chuyển 100% traffic sang bản mới
+        run: gcloud run services update-traffic "$SERVICE" --region "$REGION" --to-latest
+
+  # 5. Giữ 3 revision gần nhất để rollback, xóa phần còn lại (revision còn tag/traffic thì bỏ qua).
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: deploy
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: |
+          gcloud run revisions list --service "$SERVICE" --region "$REGION" \
+            --sort-by '~metadata.creationTimestamp' --format 'value(name)' | tail -n +4 | while read -r rev; do
+            gcloud run revisions delete "$rev" --region "$REGION" --quiet && echo "đã xóa $rev" || echo "bỏ qua $rev (đang có tag/traffic)"
+          done
