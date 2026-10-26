@@ -1,0 +1,55 @@
+# CI cho todo-api: chạy trên mỗi PR vào develop/test/main.
+# Ba job song song, không dùng secret. Kết quả dùng làm required check trong ruleset.
+name: ci
+
+on:
+  pull_request:
+    branches: [develop, test, main]
+
+# Có commit mới trên cùng PR thì hủy run cũ đang chạy, tiết kiệm phút CI.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4 # đọc version từ "packageManager" trong package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm format:check
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Unit test không cần DB/Redis (đã kiểm tra chạy với env rỗng). e2e cần Postgres, để giai đoạn sau.
+      - run: pnpm test:cov
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: test -f dist/main.js

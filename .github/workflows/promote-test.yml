@@ -1,0 +1,36 @@
+# TEST: merge develop -> test. Promote image đã build ở develop (không build lại), migrate todo_test, deploy todo-api-test.
+name: promote-test
+
+on:
+  push:
+    branches: [test]
+  workflow_dispatch:
+
+concurrency:
+  group: promote-test
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  promote:
+    uses: ./.github/workflows/_promote.yml
+    with:
+      env_tag: test
+  deploy:
+    needs: promote
+    uses: ./.github/workflows/_deploy-api.yml
+    with:
+      service: todo-api-test
+      environment: test
+      digest: ${{ needs.promote.outputs.digest }}
+      db_secret: todo-database-url-test
+      webhook_secret: todo-webhook-secret-test
+      cors_origin: https://todo-web-test-${{ vars.GCP_PROJECT_NUMBER }}.asia-southeast1.run.app
+      min_instances: 0
+      max_instances: 2
+      health_retries: 3
+      health_interval: 20
+      backup_before_migrate: false

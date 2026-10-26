@@ -1,0 +1,94 @@
+# Hạ tầng local đủ bộ: Postgres, Redis, migrate, API, Web. Mật khẩu giả.
+# Bật chỉ DB:   docker compose up -d postgres redis
+# Bật tất cả:   docker compose up -d --build
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: todo-postgres
+    environment:
+      POSTGRES_USER: todo_user        # user đăng nhập Postgres
+      POSTGRES_PASSWORD: todo_pass_local  # mật khẩu giả, chỉ dùng local
+      POSTGRES_DB: todo_db            # tên database (bên trong có bảng "todo")
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U todo_user -d todo_db']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: todo-redis
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Chạy migration MỘT LẦN rồi thoát. api chờ nó xong mới start.
+  # Trong mạng compose, host của Postgres là tên service "postgres", không phải localhost.
+  migrate:
+    build: { context: ., target: production }
+    image: todo-api:local
+    container_name: todo-migrate
+    command: ['node', 'node_modules/typeorm/cli.js', '-d', 'dist/database/typeorm.config.js', 'migration:run']
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://todo_user:todo_pass_local@postgres:5432/todo_db
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api:
+    image: todo-api:local
+    container_name: todo-api
+    ports:
+      - '8080:8080'
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      LOG_LEVEL: info
+      DATABASE_URL: postgresql://todo_user:todo_pass_local@postgres:5432/todo_db
+      REDIS_URL: redis://redis:6379
+      FIREBASE_PROJECT_ID: todo-lab-hoanglong
+      WEBHOOK_SECRET: local-webhook-secret-doi-sau
+      GAS_WEBAPP_URL: ${GAS_WEBAPP_URL:-}
+      GAS_WEBAPP_SECRET: ${GAS_WEBAPP_SECRET:-}
+      CORS_ORIGINS: http://localhost:3000
+      # firebase-admin trong container không có gcloud: mượn ADC của máy qua volume bên dưới
+      GOOGLE_APPLICATION_CREDENTIALS: /gcloud/adc.json
+    volumes:
+      - ~/.config/gcloud/application_default_credentials.json:/gcloud/adc.json:ro
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8080/api/v1/health']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  web:
+    build:
+      context: ../todo-web
+      target: runner
+      args:
+        # NEXT_PUBLIC_* lấy từ file .env cạnh compose (xem .env.example), đóng cứng lúc build
+        NEXT_PUBLIC_APP_ENV: local
+        NEXT_PUBLIC_FIREBASE_API_KEY: ${NEXT_PUBLIC_FIREBASE_API_KEY}
+        NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN}
+        NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${NEXT_PUBLIC_FIREBASE_PROJECT_ID}
+        NEXT_PUBLIC_FIREBASE_APP_ID: ${NEXT_PUBLIC_FIREBASE_APP_ID}
+    image: todo-web:local
+    container_name: todo-web
+    ports:
+      - '3000:8080'
+    depends_on:
+      api: { condition: service_healthy }
+
+volumes:
+  pgdata:

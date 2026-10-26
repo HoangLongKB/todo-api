@@ -1,0 +1,44 @@
+# PROD: merge test -> main. Promote (không build lại), báo "chờ duyệt", rồi job deploy DỪNG ở Environment production
+# cho tới khi Required Reviewer bấm Approve. Duyệt xong: backup Cloud SQL -> migrate -> candidate -> health 5 lần -> traffic.
+name: release-production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  promote:
+    uses: ./.github/workflows/_promote.yml
+    with:
+      env_tag: prod
+  notify-pending-approval:
+    needs: promote
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "⏳ Image ${{ needs.promote.outputs.digest }} (promoted=${{ needs.promote.outputs.promoted }}) đang chờ duyệt lên PROD."
+          echo "Vào tab Actions -> run này -> Review deployments -> production -> Approve."
+  deploy:
+    needs: promote
+    uses: ./.github/workflows/_deploy-api.yml
+    with:
+      service: todo-api-prod
+      environment: production
+      digest: ${{ needs.promote.outputs.digest }}
+      db_secret: todo-database-url-prod
+      webhook_secret: todo-webhook-secret-prod
+      cors_origin: https://todo-web-prod-${{ vars.GCP_PROJECT_NUMBER }}.asia-southeast1.run.app
+      min_instances: 0
+      max_instances: 10
+      health_retries: 5
+      health_interval: 30
+      backup_before_migrate: true
