@@ -1,0 +1,107 @@
+# Workflow DÙNG CHUNG (workflow_call): (backup) -> migrate -> deploy candidate -> health -> traffic -> cleanup.
+# Mọi khác biệt giữa dev/test/prod là THAM SỐ, không phải file khác.
+name: _deploy-api
+
+on:
+  workflow_call:
+    inputs:
+      service: { required: true, type: string }          # todo-api-test | todo-api-prod
+      environment: { required: true, type: string }      # GitHub Environment: test | production
+      digest: { required: true, type: string }           # sha256:... image sẽ deploy
+      db_secret: { required: true, type: string }        # tên secret DATABASE_URL trong Secret Manager
+      webhook_secret: { required: true, type: string }
+      cors_origin: { required: true, type: string }
+      min_instances: { required: false, type: number, default: 0 }
+      max_instances: { required: false, type: number, default: 2 }
+      health_retries: { required: false, type: number, default: 3 }
+      health_interval: { required: false, type: number, default: 20 }
+      backup_before_migrate: { required: false, type: boolean, default: false }
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  REGION: asia-southeast1
+  IMAGE: asia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/todo/todo-api
+  RUNTIME_SA: todo-api-sa@${{ vars.GCP_PROJECT_ID }}.iam.gserviceaccount.com
+  SQL_CONN: ${{ vars.GCP_PROJECT_ID }}:asia-southeast1:todo-sql
+  SQL_INSTANCE: todo-sql
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }} # production có Required Reviewers -> job dừng chờ duyệt TẠI ĐÂY
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Backup Cloud SQL trước khi migrate (prod)
+        if: inputs.backup_before_migrate
+        run: |
+          gcloud sql backups create --instance "$SQL_INSTANCE" --description "pre-migrate ${{ inputs.service }} $(git rev-parse --short=12 HEAD)"
+          gcloud sql backups list --instance "$SQL_INSTANCE" --limit 1 --format 'table(id,status,windowStartTime)'
+
+      - name: Cloud SQL Auth Proxy (unix socket)
+        run: |
+          curl -fsSL -o cloud-sql-proxy https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.26.2/cloud-sql-proxy.linux.amd64
+          chmod +x cloud-sql-proxy
+          sudo mkdir -p /cloudsql && sudo chown "$USER" /cloudsql
+          ./cloud-sql-proxy --unix-socket /cloudsql "$SQL_CONN" > proxy.log 2>&1 &
+          for i in $(seq 1 20); do [ -S "/cloudsql/$SQL_CONN/.s.PGSQL.5432" ] && exit 0; sleep 1; done
+          cat proxy.log; exit 1
+      - name: Migrate
+        run: |
+          URL="$(gcloud secrets versions access latest --secret='${{ inputs.db_secret }}')"
+          echo "::add-mask::$URL"
+          DATABASE_URL="$URL" pnpm migration:run
+
+      - name: Deploy (service mới thì nhận traffic luôn; đã có thì candidate 0%)
+        id: dep
+        run: |
+          if gcloud run services describe "${{ inputs.service }}" --region "$REGION" >/dev/null 2>&1; then
+            MODE="--no-traffic --tag candidate"; echo "first=false" >> "$GITHUB_OUTPUT"
+          else
+            MODE=""; echo "first=true" >> "$GITHUB_OUTPUT"
+          fi
+          gcloud run deploy "${{ inputs.service }}" --region "$REGION" \
+            --image "${IMAGE}@${{ inputs.digest }}" \
+            --service-account "$RUNTIME_SA" \
+            --add-cloudsql-instances "$SQL_CONN" \
+            --set-env-vars "^|^NODE_ENV=production|LOG_LEVEL=info|FIREBASE_PROJECT_ID=${{ vars.GCP_PROJECT_ID }}|DB_MAX_CONNECTIONS=5|CORS_ORIGINS=${{ inputs.cors_origin }}" \
+            --set-secrets "DATABASE_URL=${{ inputs.db_secret }}:latest,WEBHOOK_SECRET=${{ inputs.webhook_secret }}:latest" \
+            --allow-unauthenticated \
+            --min-instances ${{ inputs.min_instances }} --max-instances ${{ inputs.max_instances }} \
+            --timeout 300 $MODE
+      - name: Health check
+        run: |
+          if [ "${{ steps.dep.outputs.first }}" = "true" ]; then
+            URL="https://${{ inputs.service }}-${{ vars.GCP_PROJECT_NUMBER }}.${REGION}.run.app/api/v1/health"
+          else
+            URL="https://candidate---${{ inputs.service }}-${{ vars.GCP_PROJECT_NUMBER }}.${REGION}.run.app/api/v1/health"
+          fi
+          for i in $(seq 1 ${{ inputs.health_retries }}); do
+            if curl -fsS --max-time 10 "$URL"; then echo; echo "OK lần $i"; exit 0; fi
+            echo "Lần $i chưa ok, đợi ${{ inputs.health_interval }}s"; sleep ${{ inputs.health_interval }}
+          done
+          echo "Candidate không khỏe, KHÔNG chuyển traffic"; exit 1
+      - name: Chuyển traffic
+        if: steps.dep.outputs.first != 'true'
+        run: gcloud run services update-traffic "${{ inputs.service }}" --region "$REGION" --to-latest
+      - name: Dọn revision (giữ 3)
+        run: |
+          gcloud run revisions list --service "${{ inputs.service }}" --region "$REGION" \
+            --sort-by '~metadata.creationTimestamp' --format 'value(name)' | tail -n +4 | while read -r rev; do
+            gcloud run revisions delete "$rev" --region "$REGION" --quiet && echo "đã xóa $rev" || echo "bỏ qua $rev"
+          done
