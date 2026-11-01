@@ -66,6 +66,9 @@ jobs:
           URL="$(gcloud secrets versions access latest --secret='${{ inputs.db_secret }}')"
           echo "::add-mask::$URL"
           DATABASE_URL="$URL" pnpm migration:run
+      - name: Log proxy khi migrate lỗi
+        if: failure()
+        run: echo "----- proxy.log -----"; cat proxy.log || true
 
       - name: Deploy (service mới thì nhận traffic luôn; đã có thì candidate 0%)
         id: dep
