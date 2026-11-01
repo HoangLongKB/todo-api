@@ -15,5 +15,6 @@ describe('HealthController', () => {
     const res = controller.check();
     expect(res.status).toBe('ok');
     expect(res.version).toMatch(/^\d+\.\d+\.\d+/);
+    expect(res.uptimeSec).toBeGreaterThanOrEqual(0);
   });
 });
