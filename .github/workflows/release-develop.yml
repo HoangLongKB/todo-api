@@ -142,6 +142,9 @@ jobs:
           echo "DATABASE_URL=$URL" >> "$GITHUB_ENV"
       - name: Chạy migration
         run: pnpm migration:run
+      - name: Log proxy khi migrate lỗi
+        if: failure()
+        run: echo "----- proxy.log -----"; cat proxy.log || true
 
   # 4. Deploy candidate (0% traffic) -> health check 3 lần -> chuyển traffic. Fail trước khi chuyển thì bản cũ vẫn phục vụ.
   deploy:
